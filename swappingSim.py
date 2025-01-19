@@ -452,7 +452,48 @@ def main():
     """
     st.title("Battery Swapping Simulation in Metro Manila")
 
-    # Add city selection and radius control to sidebar
+    # Add description and instructions
+    with st.expander("📖 Description & Instructions", expanded=True):
+        st.markdown("""
+        ### Description
+        This simulation models electric vehicle battery swapping operations in Metro Manila. It tracks vehicle movements, 
+        battery states, and swapping station operations in real-time.
+
+        ### How to Use
+        1. **Area Settings** (Sidebar):
+            - Select a center city in Metro Manila
+            - Set the working radius (100-5000 meters)
+
+        2. **Configure Vehicle Types** (Sidebar):
+            - Expand 'Vehicle Categories Configuration'
+            - Adjust parameters for each vehicle type (A, B, C)
+            - Parameters include battery capacity, range, discharge threshold, and consumption rate
+
+        3. **Configure Station Types** (Sidebar):
+            - Expand 'Station Categories Configuration'
+            - Adjust parameters for each station type (Small, Medium, Large)
+            - Parameters include charging speed, inventory capacity, and charging slots
+
+        4. **Set Simulation Parameters** (Sidebar):
+            - Set number of vehicles
+            - Select vehicle categories to include
+            - Adjust distribution percentage for each vehicle type
+
+        5. **Run Simulation**:
+            - Click 'Run Simulation' button
+            - Monitor real-time metrics and charts:
+                - Current out-of-charge vehicles
+                - Emergency swap occurrences
+                - Average battery levels by vehicle type
+                - Daily statistics
+
+        ### Map Legend
+        - Vehicles are shown as colored dots (green→red indicating battery level)
+        - Stations are shown as blue markers
+        - Hover over markers to see detailed information
+        """)
+
+    # Sidebar configurations
     st.sidebar.header("Area Settings")
     center_city = st.sidebar.selectbox(
         "Center City",
@@ -591,30 +632,9 @@ def main():
         with st.spinner('Initializing simulation...'):
             try:
                 G = get_bounded_graph(center_city, radius_meters)
-                
-                # Display area info
                 st.info(f"Simulating area centered on {center_city} with {radius_meters}m radius")
                 
-                # Create initial map with dynamic zoom level
-                center_lat, center_lon = NCR_CITIES[center_city]
-                zoom_level = get_zoom_level(radius_meters)
-                initial_map = folium.Map(
-                    location=[center_lat, center_lon],
-                    zoom_start=zoom_level
-                )
-                
-                # Add circle to show radius
-                folium.Circle(
-                    location=[center_lat, center_lon],
-                    radius=radius_meters,
-                    color='red',
-                    fill=True,
-                    fillOpacity=0.1
-                ).add_to(initial_map)
-                
-                folium_static(initial_map)
-                
-                # Initialize vehicles within bounds
+                # Initialize vehicles and stations
                 vehicles = []
                 vehicle_id = 0
                 nodes = list(G.nodes)  # Get nodes within bounds
