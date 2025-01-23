@@ -306,6 +306,19 @@ class Vehicle:
         self.route_index = 0
         self.last_path_update = 0
 
+    def reset_for_new_cycle(self):
+        """Reset vehicle state for new cycle while preserving daily stats"""
+        # Keep the same home coordinate and initial route
+        self.position = self.home_coordinate
+        self.route = self.initial_route.copy()
+        self.route_index = 0
+        self.needs_swap = False
+        self.out_of_charge = False
+        self.out_of_charge_duration = 0
+        self.last_path_update = 0
+        # Note: We don't reset emergency_swaps or regular_swaps as those are daily counters
+        # Note: We don't reset distance_traveled as that's a daily counter
+
 # Station Class
 class Station:
     """Represents a battery swapping station
@@ -720,6 +733,47 @@ def reset_simulation_for_new_day(vehicles, stations):
     for vehicle in vehicles:
         vehicle.reset_for_new_day()
 
+def get_time_of_day(timestep, highlight_start=False):
+    """Convert timestep to time of day string in 12-hour format
+    
+    Args:
+        timestep: Current simulation timestep
+        highlight_start: Whether to highlight 8:00 AM
+    Returns:
+        String representation of time in 12-hour format with optional highlighting
+    """
+    minutes_elapsed = timestep * TIME_STEP_MINUTES
+    total_minutes = (SIMULATION_START_HOUR * 60) + minutes_elapsed
+    
+    # If we've gone past the end hour (21:00), reset to start hour (08:00)
+    if total_minutes >= SIMULATION_END_HOUR * 60:
+        total_minutes = SIMULATION_START_HOUR * 60 + (minutes_elapsed % (HOURS_PER_CYCLE * 60))
+    
+    hours = (total_minutes // 60)
+    minutes = total_minutes % 60
+    period = "AM" if hours < 12 else "PM"
+    display_hours = hours if hours <= 12 else hours - 12
+    display_hours = 12 if display_hours == 0 else display_hours
+    
+    time_str = f"{display_hours}:{minutes:02d} {period}"
+    
+    # Highlight 8:00 AM with bold and color
+    if highlight_start and hours == 8 and minutes == 0:
+        return f"<b><span style='color: red'>{time_str}</span></b>"
+    return time_str
+
+# Update the graph layouts
+def create_time_axis_layout(simulation_time):
+    """Create consistent time axis layout for all graphs"""
+    return dict(
+        title="Timestep",
+        tickmode='array',
+        ticktext=[get_time_of_day(t, highlight_start=True) for t in range(0, simulation_time, 8)],
+        tickvals=list(range(0, simulation_time, 8)),
+        tickangle=90,
+        tickformat=""  # Prevent plotly from formatting our custom labels
+    )
+
 # Main Streamlit App
 def main():
     """Main simulation application using Streamlit
@@ -1062,20 +1116,27 @@ def main():
                             st.metric("Total Battery Swaps", total_swaps)
                     
                     with chart_placeholder.container():
-                        tab1, tab2, tab3, tab4 = st.tabs(["Vehicles Out of Charge", "Average SOC by Category", 
-                                                         "Vehicle 0 SOC", "Station 0 Inventory"])
+                        tab1, tab2, tab3, tab4, tab5 = st.tabs(["Vehicles Out of Charge", "Average SOC by Category", 
+                                                         "Vehicle 0 SOC", "Station 0 Inventory", "Network Capacity"])
                         
                         with tab1:
                             # Track out-of-charge vehicles over time
                             out_of_charge_df = results_df.groupby('timestep')['out_of_charge'].sum().reset_index()
-                            chart_data = pd.DataFrame(index=range(simulation_time))
-                            chart_data['timestep'] = range(simulation_time)
+                            chart_data = pd.DataFrame(index=range(current_timestep + 1))  # Only up to current timestep
+                            chart_data['timestep'] = range(current_timestep + 1)
                             chart_data['out_of_charge'] = 0
-                            chart_data.update(out_of_charge_df.set_index('timestep'))
+                            
+                            # Only update with data up to current timestep
+                            if not out_of_charge_df.empty:
+                                current_data = out_of_charge_df[out_of_charge_df['timestep'] <= current_timestep]
+                                chart_data.update(current_data.set_index('timestep'))
                             
                             fig = px.line(chart_data, x='timestep', y='out_of_charge', 
                                         title='Vehicles Out of Charge Over Time')
-                            fig.update_layout(xaxis_range=[0, simulation_time])
+                            fig.update_layout(
+                                xaxis_range=[0, simulation_time],
+                                xaxis=create_time_axis_layout(simulation_time)
+                            )
                             st.plotly_chart(fig, use_container_width=True, key=f"out_of_charge_chart_{current_timestep}")
                             
                         with tab2:
@@ -1088,8 +1149,8 @@ def main():
                             ).fillna(method='ffill')
                             
                             # Create fixed-size DataFrame with all timesteps
-                            chart_data = pd.DataFrame(index=range(simulation_time))
-                            chart_data['timestep'] = range(simulation_time)
+                            chart_data = pd.DataFrame(index=range(current_timestep + 1))  # Only up to current timestep
+                            chart_data['timestep'] = range(current_timestep + 1)
                             for category in selected_vehicle_categories:
                                 chart_data[f'Avg SOC {category}'] = category_soc_df.get(category, 0)
                             
@@ -1103,25 +1164,36 @@ def main():
                                 ))
                             fig.update_layout(
                                 title='Average SOC by Vehicle Category',
-                                xaxis_range=[0, simulation_time],
                                 xaxis_title='Timestep',
-                                yaxis_title='SOC (kWh)'
+                                yaxis_title='SOC (kWh)',
+                                xaxis_range=[0, simulation_time],
+                                xaxis=create_time_axis_layout(simulation_time),
+                                legend=dict(
+                                    orientation="h",
+                                    yanchor="bottom",
+                                    y=1.02,
+                                    xanchor="right",
+                                    x=1
+                                )
                             )
                             st.plotly_chart(fig, use_container_width=True, key=f"soc_chart_{current_timestep}")
 
                         with tab3:
                             # Vehicle 0 SOC tracker
                             vehicle0_data = results_df[results_df['vehicle_id'] == 0]
-                            chart_data = pd.DataFrame(index=range(simulation_time))
-                            chart_data['timestep'] = range(simulation_time)
+                            chart_data = pd.DataFrame(index=range(current_timestep + 1))  # Only up to current timestep
+                            chart_data['timestep'] = range(current_timestep + 1)
                             chart_data['soc'] = 0
+                            
                             if not vehicle0_data.empty:
-                                chart_data.update(vehicle0_data[['timestep', 'soc']].set_index('timestep'))
+                                current_data = vehicle0_data[vehicle0_data['timestep'] <= current_timestep]
+                                chart_data.update(current_data[['timestep', 'soc']].set_index('timestep'))
                             
                             fig = px.line(chart_data, x='timestep', y='soc',
                                          title='Vehicle 0 SOC Over Time')
                             fig.update_layout(
                                 xaxis_range=[0, simulation_time],
+                                xaxis=create_time_axis_layout(simulation_time),
                                 xaxis_title='Timestep',
                                 yaxis_title='SOC (kWh)'
                             )
@@ -1132,12 +1204,14 @@ def main():
                             station0_data = pd.DataFrame(station_history)
                             if not station0_data.empty and 'station_id' in station0_data.columns:
                                 station0_data = station0_data[station0_data['station_id'] == 0]
-                                chart_data = pd.DataFrame(index=range(simulation_time))
-                                chart_data['timestep'] = range(simulation_time)
+                                chart_data = pd.DataFrame(index=range(current_timestep + 1))  # Only up to current timestep
+                                chart_data['timestep'] = range(current_timestep + 1)
                                 chart_data['inventory'] = 0
                                 chart_data['charging_slots_used'] = 0
+                                
                                 if not station0_data.empty:
-                                    chart_data.update(station0_data[['timestep', 'inventory', 'charging_slots_used']].set_index('timestep'))
+                                    current_data = station0_data[station0_data['timestep'] <= current_timestep]
+                                    chart_data.update(current_data[['timestep', 'inventory', 'charging_slots_used']].set_index('timestep'))
                                 
                                 # Create figure with secondary y-axis
                                 fig = go.Figure()
@@ -1167,6 +1241,7 @@ def main():
                                     xaxis_title='Timestep',
                                     yaxis_title='Number of Batteries',
                                     xaxis_range=[0, simulation_time],
+                                    xaxis=create_time_axis_layout(simulation_time),
                                     legend=dict(
                                         orientation="h",
                                         yanchor="bottom",
@@ -1178,6 +1253,80 @@ def main():
                                 st.plotly_chart(fig, use_container_width=True, key=f"station0_status_chart_{current_timestep}")
                             else:
                                 st.warning("No data available for Station 0")
+
+                        with tab5:
+                            # Aggregate station metrics
+                            station_data = pd.DataFrame(station_history)
+                            if not station_data.empty:
+                                # Calculate total charging slots capacity
+                                total_charging_capacity = sum(station.charging_slots for station in stations)
+                                
+                                # Group by timestep and sum inventory and charging slots in use
+                                network_data = station_data.groupby('timestep').agg({
+                                    'inventory': 'sum',
+                                    'charging_slots_used': 'sum'
+                                }).reset_index()
+                                
+                                # Calculate remaining charging slots
+                                network_data['charging_slots_remaining'] = total_charging_capacity - network_data['charging_slots_used']
+
+                                # Create fixed-size DataFrame but only up to current timestep
+                                chart_data = pd.DataFrame(index=range(current_timestep + 1))  # Only up to current timestep
+                                chart_data['timestep'] = range(current_timestep + 1)
+                                chart_data['total_inventory'] = 0
+                                chart_data['charging_slots_remaining'] = total_charging_capacity
+                                
+                                # Only update with data up to current timestep
+                                if not network_data.empty:
+                                    current_data = network_data[network_data['timestep'] <= current_timestep]
+                                    chart_data.update(current_data.rename(
+                                        columns={
+                                            'inventory': 'total_inventory'
+                                        }
+                                    ).set_index('timestep'))
+
+                                # Create figure with both metrics
+                                fig = go.Figure()
+
+                                # Add total inventory line
+                                fig.add_trace(
+                                    go.Scatter(
+                                        x=chart_data['timestep'],
+                                        y=chart_data['total_inventory'],
+                                        name='Total Network Inventory',
+                                        line=dict(color='blue')
+                                    )
+                                )
+
+                                # Add remaining charging slots line
+                                fig.add_trace(
+                                    go.Scatter(
+                                        x=chart_data['timestep'],
+                                        y=chart_data['charging_slots_remaining'],
+                                        name='Available Charging Slots',
+                                        line=dict(color='green')
+                                    )
+                                )
+
+                                fig.update_layout(
+                                    title='Network-wide Battery Status',
+                                    xaxis_title='Timestep',
+                                    yaxis_title='Number of Batteries/Slots',
+                                    xaxis_range=[0, simulation_time],
+                                    xaxis=create_time_axis_layout(simulation_time),
+                                    yaxis_range=[0, max(total_charging_capacity, 
+                                                      chart_data['total_inventory'].max()) * 1.1],
+                                    legend=dict(
+                                        orientation="h",
+                                        yanchor="bottom",
+                                        y=1.02,
+                                        xanchor="right",
+                                        x=1
+                                    )
+                                )
+                                st.plotly_chart(fig, use_container_width=True, key=f"network_status_chart_{current_timestep}")
+                            else:
+                                st.warning("No station data available")
 
                 # Store results at regular intervals
                 if t % sample_rate == 0:
@@ -1203,7 +1352,7 @@ def main():
 
             # End of cycle - reset vehicles
             for vehicle in vehicles:
-                vehicle.reset_for_new_day()
+                vehicle.reset_for_new_cycle()
                 
             cycle += 1
         
